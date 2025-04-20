@@ -1,6 +1,11 @@
-# Ignore Python cache files
-__pycache__/
-*.py[cod]
+# Ignore all __pycache__ directories recursively
+**/__pycache__/
+
+# Ignore all compiled Python files recursively
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/*.pyc
 
 # Ignore macOS Finder metadata
 .DS_Store

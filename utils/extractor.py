@@ -1,13 +1,16 @@
 import sys
 import time
 import threading
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 class Extarctor:
-    def __init__(self,url):
+    def __init__(self, url):
         self.stop_spinner = False
         self.url = url
 
@@ -19,58 +22,74 @@ class Extarctor:
                 sys.stdout.flush()
                 time.sleep(0.1)
 
-    def convert_duration_to_seconds(self, duration):
-        parts = duration.split(":")
-        parts = [int(p) for p in parts]
-        
-        if len(parts) == 3:  # Format: hh:mm:ss
-            return parts[0] * 3600 + parts[1] * 60 + parts[2]
-        elif len(parts) == 2:  # Format: mm:ss
-            return parts[0] * 60 + parts[1]
-        else:
-            return 0
+    def convert_duration_to_seconds(self, duration: str) -> int:
+        """Safely convert 'hh:mm:ss' or 'mm:ss' into total seconds."""
+        try:
+            parts = [int(p) for p in duration.split(":")]
+            if len(parts) == 3:
+                return parts[0]*3600 + parts[1]*60 + parts[2]
+            if len(parts) == 2:
+                return parts[0]*60 + parts[1]
+        except (ValueError, AttributeError):
+            pass
+        return 0
 
     def get_svg_string_and_duration_in_sec(self):
-        """Fetches the YouTube page and extracts the SVG path's 'd' attribute from the heatmap."""
-        options = webdriver.ChromeOptions()
-        options.add_argument("--headless")  # Run in headless mode
+        """Fetch YouTube, wait for elements, extract heatmap 'd' and duration in seconds."""
+        chrome_bin = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
+        driver_path = os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
 
-        # Automatically download and use the latest ChromeDriver
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
+        # Sanity checks
+        if not os.path.exists(chrome_bin):
+            raise FileNotFoundError(f"Chromium binary not found: {chrome_bin}")
+        if not os.path.exists(driver_path):
+            raise FileNotFoundError(f"chromedriver not found: {driver_path}")
+
+        # Setup Chrome in headless mode
+        chrome_options = Options()
+        chrome_options.binary_location = chrome_bin
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1280,1696")
+
+        service = Service(driver_path)
+        driver = webdriver.Chrome(service=service, options=chrome_options)
 
         driver.get(self.url)
 
-        # Start spinner thread
+        # Spinner
         self.stop_spinner = False
-        spinner_thread = threading.Thread(target=self.spinning_cursor)
-        spinner_thread.start()
-
-        # Wait for the page to load (adjust time as necessary)
-        time.sleep(5)
-
-        # Stop spinner and wait for thread to finish
-        self.stop_spinner = True
-        spinner_thread.join()
-        sys.stdout.write("\rPage Loaded! ✅\n")
+        spinner = threading.Thread(target=self.spinning_cursor)
+        spinner.start()
 
         try:
-            # Locate the SVG heat map path element
-            heatmap_element = driver.find_element(By.CSS_SELECTOR, ".ytp-heat-map-path")
-            svg_string = heatmap_element.get_attribute("d")
+            # Wait up to 30s for the heatmap path element to appear
+            wait = WebDriverWait(driver, 30)
 
-            # Extract the video duration
-            duration_element = driver.find_element(By.CSS_SELECTOR, ".ytp-time-duration")
-            video_duration = duration_element.text.strip()  # Get text inside <span>
-            duration_seconds = self.convert_duration_to_seconds(video_duration)
-            print("Video Duration:", duration_seconds)
+            heatmap_el = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".ytp-heat-map-path"))
+            )
+            svg_d = heatmap_el.get_attribute("d")
 
-            
-            driver.quit()
-            return svg_string, duration_seconds
+            # Wait until the duration text is present and non-empty
+            def non_empty_duration(drv):
+                txt = drv.find_element(By.CSS_SELECTOR, ".ytp-time-duration").text.strip()
+                return txt if txt else False
+
+            duration_txt = wait.until(non_empty_duration)
+            duration_seconds = self.convert_duration_to_seconds(duration_txt)
+
         except Exception as e:
-            print("Error extracting SVG:", e)
+            print("Error extracting SVG or duration:", e)
+            svg_d, duration_seconds = None, 0
+
+        finally:
+            # Stop and clear spinner
+            self.stop_spinner = True
+            spinner.join()
+            sys.stdout.write("\rPage Loaded! ✅\n")
             driver.quit()
-            return None,None
 
-
+        return svg_d, duration_seconds
